@@ -3,10 +3,28 @@
 Fedify changelog
 ================
 
-Version 0.13.0
+Version 0.14.0
 --------------
 
 To be released.
+
+ -  Improved the performance of `Object.toJsonLd()` method.
+
+     -  `Object.toJsonLd()` method no longer guarantees that the returned
+        JSON-LD object is compacted unless the `format: "compact"` option is
+        provided.
+     -  Added `format` option to `Object.toJsonLd()` method.
+     -  Deprecated `expand` option of `Object.toJsonLd()` method.
+        Use `format: "expand"` option instead.
+     -  The `context` option of `Object.toJsonLd()` method is now only
+        applicable to `format: "compact"`.  Otherwise, it throws
+        a `TypeError`.
+
+
+Version 0.13.0
+--------------
+
+Released on August 7, 2024.
 
  -  Added `closed` property to `Question` class in Activity Vocabulary API.
 

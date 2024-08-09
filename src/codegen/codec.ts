@@ -2,10 +2,12 @@ import { generateField, getFieldName } from "./field.ts";
 import type { TypeSchema } from "./schema.ts";
 import {
   areAllScalarTypes,
+  getAllProperties,
   getDecoder,
   getDecoders,
   getEncoders,
   getSubtypes,
+  isCompactableType,
 } from "./type.ts";
 
 export async function* generateEncoder(
@@ -16,17 +18,131 @@ export async function* generateEncoder(
   yield `
   /**
    * Converts this object to a JSON-LD structure.
+   * @param options The options to use.
+   *                - \`format\`: The format of the output: \`compact\` or
+                      \`expand\`.
+   *                - \`contextLoader\`: The loader for remote JSON-LD contexts.
+   *                - \`context\`: The JSON-LD context to use.  Not applicable
+                      when \`format\` is set to \`'expand'\`.
    * @returns The JSON-LD representation of this object.
    */
   async toJsonLd(options: {
+    format?: "compact" | "expand",
     expand?: boolean,
     contextLoader?: DocumentLoader,
     context?: string | Record<string, string> | (string | Record<string, string>)[],
   } = {}): Promise<unknown> {
+    if (options.expand != null) {
+      if (options.format != null) {
+        throw new TypeError(
+          "The expand option, which is deprecated, cannot be used together " +
+          "with the format option."
+        );
+      }
+      getLogger(["fedify", "vocab"]).warn(
+        "The expand option is deprecated; use format: 'expand' instead.",
+      );
+      options = { ...options, format: "expand", expand: undefined };
+    }
+    if (options.format == null && this.#cachedJsonLd != null) {
+      return this.#cachedJsonLd;
+    }
+    if (options.format !== "compact" && options.context != null) {
+      throw new TypeError(
+        "The context option can only be used when the format option is set " +
+        "to 'compact'."
+      );
+    }
     options = {
       ...options,
       contextLoader: options.contextLoader ?? fetchDocumentLoader,
     };
+  `;
+  if (isCompactableType(typeUri, types)) {
+    yield `
+    if (
+      options.format == null
+    `;
+    for (const property of type.properties) {
+      if (!property.range.every((r) => isCompactableType(r, types))) {
+        yield `
+        && (
+          this.${await getFieldName(property.uri)} == null ||
+          this.${await getFieldName(property.uri)}.length < 1
+        )
+        `;
+      }
+    }
+    yield `
+    ) {
+    `;
+    if (type.extends == null) {
+      yield "const result: Record<string, unknown> = {};";
+    } else {
+      yield `
+      const result = await super.toJsonLd({
+        ...options,
+        format: undefined,
+        context: undefined,
+      }) as Record<string, unknown>;
+      `;
+      const selfProperties = type.properties.map((p) => p.uri);
+      for (const property of getAllProperties(typeUri, types, true)) {
+        if (!selfProperties.includes(property.uri)) continue;
+        yield `delete result[${JSON.stringify(property.compactName)}];`;
+      }
+    }
+    yield `
+      // deno-lint-ignore no-unused-vars
+      let compactItems: unknown[];
+    `;
+    for (const property of type.properties) {
+      yield `
+      compactItems = [];
+      for (const v of this.${await getFieldName(property.uri)}) {
+        const item = (
+      `;
+      if (!areAllScalarTypes(property.range, types)) {
+        yield "v instanceof URL ? v.href : ";
+      }
+      const encoders = getEncoders(
+        property.range,
+        types,
+        "v",
+        "options",
+        true,
+      );
+      for (const code of encoders) yield code;
+      yield `
+        );
+        compactItems.push(item);
+      }
+      `;
+      if (property.functional || property.container !== "list") {
+        yield `
+        if (compactItems.length > 1) {
+          result[${JSON.stringify(property.compactName)}] = compactItems;
+        } else if (compactItems.length === 1) {
+          result[${JSON.stringify(property.compactName)}] = compactItems[0];
+        }
+        `;
+      } else {
+        yield `
+        if (compactItems.length > 0) {
+          result[${JSON.stringify(property.compactName)}] = compactItems;
+        }
+        `;
+      }
+    }
+    yield `
+      result["type"] = ${JSON.stringify(type.compactName ?? type.uri)};
+      if (this.id != null) result["id"] = this.id.href;
+      result["@context"] = ${JSON.stringify(type.defaultContext)};
+      return result;
+    }
+    `;
+  }
+  yield `
     // deno-lint-ignore no-unused-vars prefer-const
     let array: unknown[];
   `;
@@ -36,7 +152,8 @@ export async function* generateEncoder(
     yield `
     const baseValues = await super.toJsonLd({
       ...options,
-      expand: true,
+      format: "expand",
+      context: undefined,
     }) as unknown[];
     const values = baseValues[0] as Record<
       string,
@@ -81,8 +198,8 @@ export async function* generateEncoder(
   }
   yield `
     values["@type"] = [${JSON.stringify(type.uri)}];
-    if (this.id) values["@id"] = this.id.href;
-    if (options.expand) {
+    if (this.id != null) values["@id"] = this.id.href;
+    if (options.format === "expand") {
       return await jsonld.expand(
         values,
         { documentLoader: options.contextLoader },
@@ -198,7 +315,11 @@ export async function* generateDecoder(
     `;
   } else {
     yield `
-    const instance = await super.fromJsonLd(values, options);
+    const instance = await super.fromJsonLd(values, {
+      ...options,
+      // @ts-ignore: an internal option
+      _fromSubclass: true,
+    });
     if (!(instance instanceof ${type.name})) {
       throw new TypeError("Unexpected type: " + instance.constructor.name);
     }
@@ -251,6 +372,16 @@ export async function* generateDecoder(
     `;
   }
   yield `
+    if (!("_fromSubclass" in options) || !options._fromSubclass) {
+      try {
+        instance.#cachedJsonLd = structuredClone(json);
+      } catch {
+        getLogger(["fedify", "vocab"]).warn(
+          "Failed to cache JSON-LD: {json}",
+          { json },
+        );
+      }
+    }
     return instance;
   }
   `;

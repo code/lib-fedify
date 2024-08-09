@@ -91,7 +91,10 @@ test("createProof()", async () => {
   assertEquals(proof.created, created);
   assertEquals(
     await verifyProof(
-      await create.toJsonLd({ contextLoader: mockDocumentLoader }),
+      await create.toJsonLd({
+        format: "compact",
+        contextLoader: mockDocumentLoader,
+      }),
       proof,
       { documentLoader: mockDocumentLoader, contextLoader: mockDocumentLoader },
     ),
@@ -138,6 +141,7 @@ test("createProof()", async () => {
 
 test("signObject()", async () => {
   const options = {
+    format: "compact" as const,
     contextLoader: mockDocumentLoader,
     documentLoader: mockDocumentLoader,
     context: [
